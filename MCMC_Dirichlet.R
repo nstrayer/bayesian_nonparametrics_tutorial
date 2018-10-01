@@ -14,7 +14,8 @@ data <- list(
   c(-3,-3),
   c(3,-3)
 ) %>% 
-  map_df(~as_tibble(rmvnorm(n = 50, mean = ., sigma = Sigma)))
+  map_df(~as_tibble(rmvnorm(n = 50, mean = ., sigma = Sigma))) %>% 
+  mutate(obs_id = 1:n())
 
 # Plot to see our nice and separated clusters
 ggplot(data, aes(x = V1, y = V2)) + geom_point()
@@ -40,7 +41,7 @@ scalar_mult_denom <- (n-1) + alpha
 draw_clusters <- function(num_clusts, id_start = 0){
   1:num_clusts %>% 
   map_df(~as_tibble(cluster_center_prior())) %>% 
-  mutate(id = id_start + (1:n()))
+  mutate(cluster_id = id_start + (1:n()))
 }
 
 # Start by drawing some number of intial clusters from our prior
@@ -48,59 +49,74 @@ clusters <- draw_clusters(num_initial_clusts)
 
 # We start by randomly assigning points to a given starting cluster. 
 data_cluster_membership <- data %>% 
-  mutate(cluster = sample(1:num_initial_clusts, size = n(), replace = TRUE))
+  mutate(cluster_id = sample(1:num_initial_clusts, size = n(), replace = TRUE))
 
 
-i <- 1
+draw_cluster_assignment <- function(i, clusters, data_cluster_membership){
+  # Then need to decide which cluster to join based on the acceptance algorithm 
+  # Wrap up in a purrr function to make it fast and clean. 
+  
+  # take out the point we're looking at 
+  current_point <- data_cluster_membership[i,c('V1', 'V2')]
+  
+  # Add the newly drawn clusters to cluster object
+  new_clusters <- clusters %>% 
+    bind_rows(
+      draw_clusters(proposal_clusters, id_start = max(.$cluster_id))
+    )
+  
+  # Look at data omitting the currently point. 
+  cluster_likelihoods <- (data_cluster_membership[-1,]) %>% 
+    group_by(cluster_id) %>% 
+    summarise(n_in = n()) %>% 
+    full_join(new_clusters, by = 'cluster_id') %>% 
+    mutate(
+      scaler_mult = ifelse(is.na(n_in), (alpha/proposal_clusters), n_in)/scalar_mult_denom,
+      likelihood_from_cluster = map2_dbl(V1, V2, ~dmvnorm(current_point, c(.x,.y))),
+      un_normed_prob_of_choosing = scaler_mult * likelihood_from_cluster,
+      normed_prob_of_choosing = un_normed_prob_of_choosing / sum(un_normed_prob_of_choosing)
+    )
 
-
-# Then need to decide which cluster to join based on the acceptance algorithm 
-# Wrap up in a purrr function to make it fast and clean. 
-
-# take out the point we're looking at 
-current_point <- data_cluster_membership[i,c('V1', 'V2')]
-
-# Add the newly drawn clusters to cluster object
-new_clusters <- clusters %>% 
-  bind_rows(
-    draw_clusters(proposal_clusters, id_start = max(.$id))
+  
+  # draw cluster with a weighted draw
+  cluster_choice <- sample(
+    cluster_likelihoods$cluster_id, 
+    size = 1, 
+    prob = cluster_likelihoods$normed_prob_of_choosing )
+  
+  # Return a simple dataframe with the ID of the point and its cluster assignment. 
+  tibble(
+    obs_id = i, 
+    cluster_id = cluster_choice
   )
-
-# Look at data omitting the currently point. 
-cluster_likelihoods <- (data_cluster_membership[-1,]) %>% 
-  group_by(cluster) %>% 
-  summarise(n_in = n()) %>% 
-  full_join(new_clusters, by = c('cluster' = 'id')) %>% 
-  mutate(
-    scaler_mult = ifelse(is.na(n_in), (alpha/proposal_clusters), n_in)/scalar_mult_denom,
-    likelihood_from_cluster = map2_dbl(V1, V2, ~dmvnorm(current_point, c(.x,.y))),
-    un_normed_prob_of_choosing = scaler_mult * likelihood_from_cluster,
-    normed_prob_of_choosing = un_normed_prob_of_choosing / sum(un_normed_prob_of_choosing)
-  )
-
-# Plot of cluster likelihoods
-cluster_likelihoods %>% 
-  ggplot(aes(x = cluster, y = normed_prob_of_choosing)) +
-  geom_point()
-
-# cluster
-cluster_choice <- sample(
-  cluster_likelihoods$cluster, 
-  size = 1, 
-  prob = cluster_likelihoods$normed_prob_of_choosing )
-
-# Return a simple dataframe with the ID of the point and its cluster assignment. 
-tibble(
-  id = i, 
-  cluster = cluster_choice
-)
+}
 
 
-# Mutate the cluster membership dataframe with this new value. 
-data_cluster_membership[i,'cluster'] <- cluster_choice
 
-# First we will initialize a cluster dataframe that contains info on each cluster, its center, and 
 
-# Dataframe that will hold each 
+for(iteration in 1:10){
+  print(glue("Running step {iteration}"))
+  # Update the points with new cluster memberships
+  data_cluster_membership <- 1:n %>% 
+    map_df(draw_cluster_assignment, clusters, data_cluster_membership) %>% 
+    full_join(data, by = 'obs_id')
+  
+  # Update the clusters with their new sizes and locations.
+  clusters <- data_cluster_membership %>% 
+    group_by(cluster_id) %>% 
+    summarise(
+      size = n(),
+      V1 = mean(V1),
+      V2 = mean(V2)
+    )
+  
+  current_plot <- data_cluster_membership  %>% 
+    ggplot(aes(x = V1, y = V2)) +
+    geom_point(aes(color = as.character(cluster_id))) +
+    geom_text(data = clusters, aes(color = as.character(cluster_id), label = cluster_id))
+  
+  ggsave(glue('animation/step{iteration}.png'), current_plot)
+}
 
-# Start by randomly assigning 
+
+gifski::
