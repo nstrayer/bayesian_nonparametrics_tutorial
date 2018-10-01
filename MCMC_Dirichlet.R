@@ -2,7 +2,7 @@ library(tidyverse)
 library(purrr)
 library(glue)
 library(mvtnorm)
-# library(patchwork)
+library(patchwork)
 
 # Implementing Algorithm 8: Aka MH + Gibs + Auxiliary parameters from Neal 2000. 
 
@@ -28,7 +28,7 @@ cluster_center_prior <- function(){
 
 
 n <- nrow(data)  
-num_initial_clusts <- 20
+num_initial_clusts <- 10
 # How many proposal clusters drawn from the prior do we have for each iteration. 
 proposal_clusters <- 3
 # Concentration parameter
@@ -53,9 +53,7 @@ data_cluster_membership <- data %>%
 
 
 draw_cluster_assignment <- function(i, clusters, data_cluster_membership){
-  # Then need to decide which cluster to join based on the acceptance algorithm 
-  # Wrap up in a purrr function to make it fast and clean. 
-  
+
   # take out the point we're looking at 
   current_point <- data_cluster_membership[i,c('V1', 'V2')]
   
@@ -65,8 +63,8 @@ draw_cluster_assignment <- function(i, clusters, data_cluster_membership){
       draw_clusters(proposal_clusters, id_start = max(.$cluster_id))
     )
   
-  # Look at data omitting the currently point. 
-  cluster_likelihoods <- (data_cluster_membership[-1,]) %>% 
+  # Look at data omitting the current point. 
+  cluster_likelihoods <- (data_cluster_membership[-i,]) %>% 
     group_by(cluster_id) %>% 
     summarise(n_in = n()) %>% 
     full_join(new_clusters, by = 'cluster_id') %>% 
@@ -92,9 +90,9 @@ draw_cluster_assignment <- function(i, clusters, data_cluster_membership){
 }
 
 
+num_iterations <- 25
 
-
-for(iteration in 1:10){
+for(iteration in 1:num_iterations){
   print(glue("Running step {iteration}"))
   # Update the points with new cluster memberships
   data_cluster_membership <- 1:n %>% 
@@ -110,13 +108,26 @@ for(iteration in 1:10){
       V2 = mean(V2)
     )
   
-  current_plot <- data_cluster_membership  %>% 
+  points_plot <- data_cluster_membership  %>% 
     ggplot(aes(x = V1, y = V2)) +
     geom_point(aes(color = as.character(cluster_id))) +
-    geom_text(data = clusters, aes(color = as.character(cluster_id), label = cluster_id))
+    geom_text(data = clusters, aes(color = as.character(cluster_id), label = cluster_id)) +
+    ggtitle(glue('Iteration {iteration}'))
+  
+  cluster_counts_plot <- ggplot(clusters, aes(x = reorder(as.character(cluster_id), -size), y = size, fill = as.character(cluster_id))) +
+    geom_col() +
+    scale_y_continuous(expand = c(0,0)) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank()
+    ) +
+    labs(x = '')
+  
+  current_plot <- (points_plot + cluster_counts_plot + plot_layout(ncol = 2, widths = c(3, 1)))*guides(fill = FALSE, color = FALSE)
   
   ggsave(glue('animation/step{iteration}.png'), current_plot)
 }
 
-
-gifski::
+1:num_iterations %>% 
+  sprintf('animation/step%i.png', .) %>% 
+  gifski::gifski(gif_file = 'animated_mcmc.gif')
